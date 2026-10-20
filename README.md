@@ -1,10 +1,10 @@
-# The Green Sector: ASCII RPG
+# Deep Space: ASCII RPG
 
 A full-screen, colorful ASCII space RPG built with Python and Pygame. The player ship is an aimable `A`; the sector contains drifting mother ships (`<O>`), escorting minion ships (`<>`), and tightly packed asteroid clusters (`#`) that rotate together as single rocks. Asteroids can be blasted apart and damage the ship on collision. Large asteroid impacts bounce the player backward. The game also features impact particles, screen shake, hull repair over time, and a low-hull visual and audio alarm.
 
 ## Screenshots
 
-![Main menu](screenshots/main-menu.png)
+![Deep Space main menu](screenshots/main-menu.png)
 
 ![Space combat and collectible packs](screenshots/gameplay.png)
 
@@ -35,7 +35,7 @@ python .\main.py
 - **P** or **Esc**: pause; Esc resumes from the pause menu
 - **F11**: toggle fullscreen
 
-Lasers damage asteroids, raiders, and mother ships. Missiles home toward hostile ships, never acquire asteroids as targets, and can also damage anything in their flight path. Asteroid clusters rotate as single rocks, spawn with clearance from other clusters, and bounce apart on collision. Destroyed asteroids sometimes release uncommon Utonium mineral packs.
+Lasers damage asteroids, raiders, and mother ships. Missiles home toward hostile ships, never acquire asteroids as targets, and can also damage anything in their flight path. Asteroid clusters rotate as single rocks, spawn with clearance from other objects, and bounce apart on collision. Mother ships and escorts steer around asteroid clusters. Packs bounce off asteroids, ships, and other packs, while remaining collectible by the player. Destroyed asteroids sometimes release uncommon Utonium mineral packs.
 
 Collectible packs blink in distinct colors and are pulled toward the player within magnetic range: green `[+]` restores hull, yellow `[!!]` adds missiles, cyan `[%]` activates a 100% shield that drains by 1% per second, and purple `[U]` adds Utonium to cargo. A shield blocks laser and missile damage but does not prevent asteroid collision damage. Hull integrity regenerates at 1% per second after three seconds without taking damage. Below 20% hull, the screen border flashes and an alarm repeats. When hull reaches zero, the ship bursts into particles, then a GAME OVER screen appears before returning to the main menu.
 

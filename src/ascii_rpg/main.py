@@ -173,7 +173,7 @@ class SpaceRPG:
     def __init__(self) -> None:
         pygame.mixer.pre_init(SAMPLE_RATE, -16, 1, 512)
         pygame.init()
-        pygame.display.set_caption("THE GREEN SECTOR — ASCII RPG")
+        pygame.display.set_caption("Deep Space — ASCII RPG")
         self.fullscreen = True
         self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
         self.clock = pygame.time.Clock()
@@ -212,16 +212,16 @@ class SpaceRPG:
         self.gameover_timer = 0.0
         self.mother_respawn = random.uniform(22.0, 34.0)
         self.mother = {"x": 27.0, "y": -8.0, "vx": -0.4, "vy": 0.25, "hp": 100.0, "wait": 2.0, "drop": False}
+        self.spawn_mother(initial=True)
         for _ in range(48):
             self.spawn_asteroid(initial=True)
         for _ in range(4):
             self.spawn_enemy(initial=True)
-        self.spawn_mother(initial=True)
         self.mode = "game"
         self.selection = 0
         self.notify("Left/right rotate; Up thrusts; Down slows; hold Tab for gradual braking. Space fires, Shift launches.", 6)
 
-    def spawn_asteroid(self, initial: bool = False) -> None:
+    def spawn_asteroid(self, initial: bool = False) -> bool:
         large = random.random() < 0.22
         cells: list[tuple[float, float]] = []
         if large:
@@ -238,14 +238,25 @@ class SpaceRPG:
                 [(-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5)],
             ])
         rock = {"x": 0.0, "y": 0.0, "vx": random.uniform(-0.35, 0.35), "vy": random.uniform(-0.35, 0.35), "cells": cells, "hp": 2 if large else 1, "large": large, "angle": random.random() * math.tau, "spin": random.choice((-1, 1)) * random.uniform(0.35, 1.6)}
-        for _ in range(60):
+        placed = False
+        for _ in range(180):
             spawn_angle = random.random() * math.tau
             spawn_radius = random.uniform(16, 54) if initial else random.uniform(34, 58)
             rock["x"] = self.player.x + math.cos(spawn_angle) * spawn_radius
             rock["y"] = self.player.y + math.sin(spawn_angle) * spawn_radius
-            if all(distance(rock["x"], rock["y"], other["x"], other["y"]) >= self.asteroid_radius(rock) + self.asteroid_radius(other) + 0.25 for other in self.asteroids):
+            radius = self.asteroid_radius(rock)
+            clear = all(distance(rock["x"], rock["y"], other["x"], other["y"]) >= radius + self.asteroid_radius(other) + 0.25 for other in self.asteroids)
+            clear = clear and distance(rock["x"], rock["y"], self.player.x, self.player.y) >= radius + 1.7
+            if self.mother.get("hp", 0) > 0:
+                clear = clear and distance(rock["x"], rock["y"], self.mother["x"], self.mother["y"]) >= radius + 3.0
+            clear = clear and all(distance(rock["x"], rock["y"], ship["x"], ship["y"]) >= radius + self.ship_radius(ship) + 0.35 for ship in self.enemies)
+            clear = clear and all(distance(rock["x"], rock["y"], item["x"], item["y"]) >= radius + self.pickup_radius(item) + 0.35 for item in self.pickups)
+            if clear:
+                placed = True
                 break
-        self.asteroids.append(rock)
+        if placed:
+            self.asteroids.append(rock)
+        return placed
 
     def asteroid_cells(self, rock: dict) -> list[tuple[float, float]]:
         angle = rock.get("angle", 0.0)
@@ -290,6 +301,91 @@ class SpaceRPG:
                     second["vx"] += impulse * nx
                     second["vy"] += impulse * ny
 
+    def ship_radius(self, ship: dict) -> float:
+        return 1.7 if ship is self.mother else 1.05
+
+    @staticmethod
+    def pickup_radius(pickup: dict) -> float:
+        return 2.15 if pickup["kind"] == "missile" else 1.65
+
+    @staticmethod
+    def resolve_circles(first: dict, second: dict, first_radius: float, second_radius: float,
+                        second_fixed: bool = False, restitution: float = 0.72) -> bool:
+        """Separate overlapping circular bodies and bounce their velocities apart."""
+        dx, dy = second["x"] - first["x"], second["y"] - first["y"]
+        separation = math.hypot(dx, dy)
+        minimum = first_radius + second_radius
+        if separation >= minimum:
+            return False
+        if separation < 1e-6:
+            angle = random.random() * math.tau
+            nx, ny = math.cos(angle), math.sin(angle)
+            separation = 1e-6
+        else:
+            nx, ny = dx / separation, dy / separation
+        overlap = minimum - separation + 0.01
+        if second_fixed:
+            first["x"] -= nx * overlap
+            first["y"] -= ny * overlap
+        else:
+            first["x"] -= nx * overlap * 0.5
+            first["y"] -= ny * overlap * 0.5
+            second["x"] += nx * overlap * 0.5
+            second["y"] += ny * overlap * 0.5
+        first.setdefault("vx", 0.0)
+        first.setdefault("vy", 0.0)
+        second.setdefault("vx", 0.0)
+        second.setdefault("vy", 0.0)
+        relative_speed = (first["vx"] - second["vx"]) * nx + (first["vy"] - second["vy"]) * ny
+        if relative_speed > 0:
+            impulse = (1.0 + restitution) * relative_speed
+            if second_fixed:
+                first["vx"] -= impulse * nx
+                first["vy"] -= impulse * ny
+            else:
+                first["vx"] -= impulse * nx * 0.5
+                first["vy"] -= impulse * ny * 0.5
+                second["vx"] += impulse * nx * 0.5
+                second["vy"] += impulse * ny * 0.5
+        return True
+
+    def asteroid_avoidance(self, x: float, y: float, clearance: float) -> tuple[float, float]:
+        steer_x = steer_y = 0.0
+        for rock in self.asteroids:
+            dx, dy = x - rock["x"], y - rock["y"]
+            d = math.hypot(dx, dy)
+            safe_distance = self.asteroid_radius(rock) + clearance + 6.0
+            if 1e-6 < d < safe_distance:
+                strength = 7.0 * (safe_distance - d) / safe_distance
+                steer_x += dx / d * strength
+                steer_y += dy / d * strength
+        return steer_x, steer_y
+
+    def resolve_solid_collisions(self) -> None:
+        """Keep ships outside asteroid fields and separate ships from each other."""
+        ships = ([self.mother] if self.mother.get("hp", 0) > 0 else []) + self.enemies
+        for _ in range(2):
+            for ship in ships:
+                for rock in self.asteroids:
+                    self.resolve_circles(ship, rock, self.ship_radius(ship), self.asteroid_radius(rock), second_fixed=True, restitution=0.6)
+            for i, first in enumerate(ships):
+                for second in ships[i + 1:]:
+                    self.resolve_circles(first, second, self.ship_radius(first), self.ship_radius(second), restitution=0.5)
+
+    def bounce_pickups(self) -> None:
+        """Bounce packs off rocks, living ships, and one another; leave player collection clear."""
+        ships = ([self.mother] if self.mother.get("hp", 0) > 0 else []) + self.enemies
+        for _ in range(2):
+            for item in self.pickups:
+                radius = self.pickup_radius(item)
+                for rock in self.asteroids:
+                    self.resolve_circles(item, rock, radius, self.asteroid_radius(rock), second_fixed=True)
+                for ship in ships:
+                    self.resolve_circles(item, ship, radius, self.ship_radius(ship), second_fixed=True)
+            for i, first in enumerate(self.pickups):
+                for second in self.pickups[i + 1:]:
+                    self.resolve_circles(first, second, self.pickup_radius(first), self.pickup_radius(second))
+
     def draw_asteroid(self, rock: dict, screen_pos) -> None:
         cells = rock["cells"]
         min_x = min(cell[0] for cell in cells)
@@ -322,17 +418,39 @@ class SpaceRPG:
         self.shake_time = max(self.shake_time, seconds)
 
     def spawn_enemy(self, initial: bool = False) -> None:
-        a = random.random() * math.tau
-        d = random.uniform(18, 38) if initial else random.uniform(28, 44)
-        self.enemies.append({"x": self.player.x + math.cos(a) * d, "y": self.player.y + math.sin(a) * d, "vx": 0.0, "vy": 0.0, "hp": 3, "wait": random.uniform(0.7, 2.0)})
+        for _ in range(120):
+            a = random.random() * math.tau
+            d = random.uniform(18, 38) if initial else random.uniform(28, 44)
+            enemy = {"x": self.player.x + math.cos(a) * d, "y": self.player.y + math.sin(a) * d,
+                     "vx": 0.0, "vy": 0.0, "hp": 3, "wait": random.uniform(0.7, 2.0)}
+            radius = self.ship_radius(enemy)
+            clear = all(distance(enemy["x"], enemy["y"], rock["x"], rock["y"]) >= radius + self.asteroid_radius(rock) + 0.5 for rock in self.asteroids)
+            clear = clear and distance(enemy["x"], enemy["y"], self.player.x, self.player.y) >= radius + 1.8
+            if self.mother.get("hp", 0) > 0:
+                clear = clear and distance(enemy["x"], enemy["y"], self.mother["x"], self.mother["y"]) >= radius + self.ship_radius(self.mother) + 0.5
+            clear = clear and all(distance(enemy["x"], enemy["y"], other["x"], other["y"]) >= radius + self.ship_radius(other) + 0.35 for other in self.enemies)
+            clear = clear and all(distance(enemy["x"], enemy["y"], item["x"], item["y"]) >= radius + self.pickup_radius(item) + 0.35 for item in self.pickups)
+            if clear:
+                self.enemies.append(enemy)
+                return
 
     def spawn_mother(self, initial: bool = False) -> None:
         if not initial:
-            angle = random.random() * math.tau
-            radius = random.uniform(34, 46)
-            self.mother = {"x": self.player.x + math.cos(angle) * radius, "y": self.player.y + math.sin(angle) * radius,
-                           "vx": random.uniform(-0.45, 0.45), "vy": random.uniform(-0.45, 0.45),
-                           "hp": 100.0, "wait": 1.5, "drop": False}
+            placed = False
+            for _ in range(180):
+                angle = random.random() * math.tau
+                radius = random.uniform(34, 46)
+                x, y = self.player.x + math.cos(angle) * radius, self.player.y + math.sin(angle) * radius
+                clear = all(distance(x, y, rock["x"], rock["y"]) >= self.asteroid_radius(rock) + 11.0 for rock in self.asteroids)
+                clear = clear and all(distance(x, y, enemy["x"], enemy["y"]) >= self.ship_radius(enemy) + 9.0 for enemy in self.enemies)
+                clear = clear and all(distance(x, y, item["x"], item["y"]) >= self.pickup_radius(item) + 8.0 for item in self.pickups)
+                if distance(x, y, self.player.x, self.player.y) >= 22.0 and clear:
+                    self.mother = {"x": x, "y": y, "vx": random.uniform(-0.45, 0.45), "vy": random.uniform(-0.45, 0.45),
+                                   "hp": 100.0, "wait": 1.5, "drop": False}
+                    placed = True
+                    break
+            if not placed:
+                return
         for index in range(5):
             angle = math.tau * index / 5 + random.uniform(-0.18, 0.18)
             radius = random.uniform(3.2, 5.0)
@@ -482,6 +600,13 @@ class SpaceRPG:
         # Mother ship slowly drifts, and fires tracking missiles at close range.
         m = self.mother
         md = distance(p.x, p.y, m["x"], m["y"])
+        if m["hp"] > 0:
+            avoid_x, avoid_y = self.asteroid_avoidance(m["x"], m["y"], self.ship_radius(m))
+            m["vx"] += avoid_x * dt
+            m["vy"] += avoid_y * dt
+            mother_speed = math.hypot(m["vx"], m["vy"])
+            if mother_speed > 2.4:
+                m["vx"], m["vy"] = m["vx"] / mother_speed * 2.4, m["vy"] / mother_speed * 2.4
         m["x"] += m["vx"] * dt
         m["y"] += m["vy"] * dt
         m["wait"] -= dt
@@ -508,10 +633,16 @@ class SpaceRPG:
                 ty = m["y"] + math.sin(escort_angle) * e["escort_radius"]
                 desired_vx = m["vx"] + (tx - e["x"]) * 0.75
                 desired_vy = m["vy"] + (ty - e["y"]) * 0.75
+                avoid_x, avoid_y = self.asteroid_avoidance(e["x"], e["y"], self.ship_radius(e))
+                desired_vx += avoid_x
+                desired_vy += avoid_y
                 e["vx"] += (desired_vx - e["vx"]) * min(1, dt * 1.6)
                 e["vy"] += (desired_vy - e["vy"]) * min(1, dt * 1.6)
             else:
                 tx, ty = vector(angle, 4.1 if d > 8 else 1.2)
+                avoid_x, avoid_y = self.asteroid_avoidance(e["x"], e["y"], self.ship_radius(e))
+                tx += avoid_x
+                ty += avoid_y
                 e["vx"] += (tx - e["vx"]) * min(1, dt * 0.8)
                 e["vy"] += (ty - e["vy"]) * min(1, dt * 0.8)
             e["x"] += e["vx"] * dt
@@ -529,6 +660,7 @@ class SpaceRPG:
             rock["y"] += rock["vy"] * dt
             rock["angle"] = (rock.get("angle", 0.0) + rock.get("spin", 0.0) * dt) % math.tau
         self.bounce_asteroids()
+        self.resolve_solid_collisions()
         for shot in self.shots:
             if shot["kind"] == "missile" and shot.get("homing"):
                 target = shot.get("target")
@@ -638,8 +770,9 @@ class SpaceRPG:
             pickup["vy"] *= drag
             pickup["x"] += pickup["vx"] * dt
             pickup["y"] += pickup["vy"] * dt
+        self.bounce_pickups()
         for pickup in list(self.pickups):
-            if distance(p.x, p.y, pickup["x"], pickup["y"]) < 1.4:
+            if distance(p.x, p.y, pickup["x"], pickup["y"]) < self.pickup_radius(pickup) + 0.6:
                 if pickup["kind"] == "hull":
                     p.hull = min(100, p.hull + 30)
                     self.notify("Hull repair pack collected.")
@@ -660,6 +793,7 @@ class SpaceRPG:
         # A mother ship also periodically releases supplies nearby while alive.
         if not m["drop"] and random.random() < dt * 0.025:
             self.spawn_pickup(m["x"] + random.uniform(-2, 2), m["y"] + random.uniform(-2, 2), random.choice(("hull", "missile", "shield")))
+        self.bounce_pickups()
         for part in self.particles:
             part["x"] += part["vx"] * dt
             part["y"] += part["vy"] * dt
@@ -670,7 +804,8 @@ class SpaceRPG:
         self.enemies = [e for e in self.enemies if distance(p.x, p.y, e["x"], e["y"]) < 60]
         self.pickups = [item for item in self.pickups if distance(p.x, p.y, item["x"], item["y"]) < 60]
         while len(self.asteroids) < 45:
-            self.spawn_asteroid()
+            if not self.spawn_asteroid():
+                break
         if len(self.enemies) < 4 and random.random() < dt * 0.18:
             self.spawn_enemy()
         if p.hull <= 0:
@@ -704,12 +839,16 @@ class SpaceRPG:
         def pos(x: float, y: float) -> tuple[int, int]:
             return round(ox + x * self.cell_w), round(oy + y * self.cell_h)
 
+        def center_pos(x: float, y: float) -> tuple[int, int]:
+            px, py = pos(x, y)
+            return px + self.cell_w // 2, py + self.cell_h // 2
+
         for rock in self.asteroids:
             self.draw_asteroid(rock, pos)
         if self.mother["hp"] > 0:
-            self.draw_text("<O>", *pos(self.mother["x"], self.mother["y"]), PURPLE)
+            self.draw_text("<O>", *center_pos(self.mother["x"], self.mother["y"]), PURPLE, center=True)
         for e in self.enemies:
-            self.draw_text("<>", *pos(e["x"], e["y"]), RED)
+            self.draw_text("<>", *center_pos(e["x"], e["y"]), RED, center=True)
         for item in self.pickups:
             glyph, base_color = {
                 "hull": ("[+]", GREEN),
@@ -719,7 +858,7 @@ class SpaceRPG:
             }.get(item["kind"], ("[+]", GREEN))
             brightness = 1.0 if math.sin(item.get("phase", 0.0)) >= 0 else 0.35
             color = tuple(round(channel * brightness) for channel in base_color)
-            self.draw_text(glyph, *pos(item["x"], item["y"]), color)
+            self.draw_text(glyph, *center_pos(item["x"], item["y"]), color, center=True)
         for shot in self.shots:
             if shot["kind"] == "missile":
                 glyph = "*"
@@ -746,14 +885,15 @@ class SpaceRPG:
             self.screen.blit(ship_surface, ship_surface.get_rect(center=(center[0] + self.cell_w // 2, center[1] + self.cell_h // 2)))
 
         pygame.draw.rect(self.screen, PANEL, (0, 0, self.width, 57))
-        self.draw_text("THE GREEN SECTOR", 24, 13, CYAN, self.ui)
+        self.draw_text("DEEP SPACE", 24, 13, CYAN, self.ui)
         self.draw_text(f"HULL {int(p.hull):03d}%   SHIELD {int(p.shield):03d}%   MISSILES {p.missiles:02d}/10   UTONIUM {p.utonium:02d}   SCORE {self.score:06d}", 280, 14, WHITE, self.ui)
         self.draw_text("LEFT/RIGHT TURN   UP THRUST   DOWN SLOW   HOLD TAB BRAKE   SPACE LASER   SHIFT HOMING MISSILE   P PAUSE", 24, 63, DIM, self.small)
         self.draw_text("[+] HULL   [!!] MISSILES   [%] SHIELD   [U] UTONIUM   Packs are magnetic when you get close.", 24, 84, DIM, self.small)
         if self.message_time > 0:
             pygame.draw.rect(self.screen, (20, 26, 36), (18, self.height - 48, self.width - 36, 32))
             self.draw_text(self.message, 28, self.height - 44, YELLOW, self.small)
-        pygame.draw.rect(self.screen, CYAN, (14, 14, max(3, int((self.width - 28) * p.hull / 100)), 3))
+        pygame.draw.rect(self.screen, (26, 55, 75), (14, 49, self.width - 28, 3))
+        pygame.draw.rect(self.screen, CYAN, (14, 49, max(3, int((self.width - 28) * p.hull / 100)), 3))
         if p.hull < 20:
             jitter = random.randint(-3, 3)
             pulse = 150 + int(90 * abs(math.sin(self.elapsed * 12)))
@@ -764,7 +904,7 @@ class SpaceRPG:
         self.screen.fill(BG)
         for x, y, size in self.stars:
             pygame.draw.circle(self.screen, (31, 51, 77), (x, y), size)
-        self.draw_text("#  THE GREEN SECTOR  #", self.width // 2, self.height // 3 - 46, CYAN, self.font, True)
+        self.draw_text("#  DEEP SPACE  #", self.width // 2, self.height // 3 - 46, CYAN, self.font, True)
         self.draw_text(title, self.width // 2, self.height // 3 + 12, WHITE, self.ui, True)
         if subtitle:
             self.draw_text(subtitle, self.width // 2, self.height // 3 + 48, DIM, self.small, True)
